@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    tr:nth-child(even) { background-color: #f2f2f2; }
+    .editable:hover { background-color: #e9ecef; cursor: pointer; }
+
+    #dataTable td, #dataTable th {
+      word-wrap: break-word;
+      overflow-wrap: break-word;
+      white-space: normal;
+    }
+
+    .table-responsive {
+        overflow-x: auto;
+    }
+
+    #dataTable {
+      table-layout: auto;
+      width: 100%;
+    }
+
+    @media (max-width: 768px) {
+      #dataTable th, #dataTable td {
+        padding: 0.5rem;
+        font-size: 0.875rem;
+      }
+    }
+  </style>
+</head>
+<body class="p-4">
+  <div class="container-fluid">
+    <h2 class="mb-3">Sheet CRUD Interface</h2>
+
+    <button class="btn btn-primary mb-3" type="button" id="toggleAddRecordFormButton" aria-expanded="false" aria-controls="newRecordForm">Add New Record</button>
+    <div class="collapse" id="newRecordForm">
+      <form id="addForm" class="mb-4 row g-3"></form>
+      <button class="btn btn-success" type="button" onclick="submitForm()">Submit</button>
+    </div>
+
+    <input type="text" id="searchInput" class="form-control mb-3" placeholder="Search records...">
+    <div class="table-responsive">
+      <table class="table table-bordered table-hover w-100" id="dataTable"></table>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+  <script>
+    let headers = [];
+    let validationRules = [];
+    let sheetData = [];
+    let newRecordFormCollapse;
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      await loadData();
+      await loadValidationRules();
+      document.getElementById('searchInput').addEventListener('input', filterTable);
+
+      const collapseElement = document.getElementById('newRecordForm');
+      newRecordFormCollapse = new bootstrap.Collapse(collapseElement, {
+        toggle: false
+      });
+
+      document.getElementById('toggleAddRecordFormButton').addEventListener('click', () => {
+        newRecordFormCollapse.toggle();
+      });
+    });
+
+    async function loadValidationRules() {
+      google.script.run.withSuccessHandler(raw => {
+        validationRules = JSON.parse(raw);
+        drawForm(validationRules);
+      }).getValidationRules();
+    }
+
+    function drawForm(rules) {
+      const form = document.getElementById('addForm');
+      form.innerHTML = '';
+      headers.forEach((header, i) => {
+        if (i === 0) return; // Skip ID field
+
+        const rule = rules[i];
+        let inputHtml = '';
+
+        // Special handling for "Shipped" column - use checkbox
+        if (header === 'Shipped') {
+          inputHtml = `<div class='form-check'>
+                        <input type='checkbox' class='form-check-input' name='${header}' id='shipped-checkbox'>
+                        <label class='form-check-label' for='shipped-checkbox'>Shipped</label>
+                      </div>`;
+        }
+        else if (rule && rule.criteria === 'VALUE_IN_LIST') {
+          let optionsHtml = '<option value="">Select</option>';
+          optionsHtml += rule.args[0].map(option => `<option value="${option}">${option}</option>`).join('');
+          inputHtml = `<select class='form-select' name='${header}'>${optionsHtml}</select>`;
+        } else if (rule && rule.criteria === 'DATE_IS_VALID_DATE') {
+          inputHtml = `<input type='date' class='form-control' name='${header}'>`;
+        } else {
+          inputHtml = `<input type='text' class='form-control' name='${header}'>`;
+        }
+
+        // For Shipped checkbox, don't add label again since it's already in the checkbox div
+        if (header === 'Shipped') {
+          form.innerHTML += `<div class='col-md-4'>${inputHtml}</div>`;
+        } else {
+          form.innerHTML += `<div class='col-md-4'><label>${header}</label>${inputHtml}</div>`;
+        }
+      });
+    }
+
+    async function loadData() {
+      google.script.run.withSuccessHandler(raw => {
+        sheetData = JSON.parse(raw);
+        headers = sheetData[0];
+        drawTable(sheetData);
+        // Draw form after headers are loaded
+        if (validationRules.length > 0) {
+          drawForm(validationRules);
+        }
+      }).getSheetData();
+    }
+
+    function formatDate(value) {
+      if (typeof value === 'boolean') {
+        return value ? 'Yes' : 'No';
+      } else if (typeof value === 'number') {
+        return value.toLocaleString();
+      }
+      return value;
+    }
+
+    function drawTable(data) {
+      const table = document.getElementById('dataTable');
+      table.innerHTML = '';
+      if (!data || data.length === 0) return;
+
+      headers = data[0];
+      const thead = `<thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}<th>Actions</th></tr></thead>`;
+
+      const tbody = data.slice(1).map((row, rowIndexInSlicedData) => {
+        const actualSheetDataRowIndex = rowIndexInSlicedData + 1;
+        const id = row[0];
+
+        return `<tr data-id='${id}' data-sheet-row-index='${actualSheetDataRowIndex}'>` +
+          row.map((cell, i) => `<td class='editable' data-index='${i}'>${formatDate(cell)}</td>`).join('') +
+          `<td>
+            <button class='btn btn-sm btn-outline-primary' onclick='editRow(this)'>Edit</button>
+            <button class='btn btn-sm btn-outline-danger ms-1' onclick='deleteRecordUI(this)'>Delete</button>
+          </td></tr>`;
+      }).join('');
+      table.innerHTML = thead + `<tbody>${tbody}</tbody>`;
+    }
+
+    function filterTable() {
+      const term = document.getElementById('searchInput').value.toLowerCase();
+      const rows = document.querySelectorAll('#dataTable tbody tr');
+      rows.forEach(row => {
+        row.style.display = row.textContent.toLowerCase().includes(term) ? '' : 'none';
+      });
+    }
+
+    function submitForm() {
+      const inputs = document.querySelectorAll('#addForm [name]');
+      const record = { id: null };
+      inputs.forEach(input => {
+        if (input.type === 'checkbox') {
+          record[input.name] = input.checked;
+        } else {
+          record[input.name] = input.value;
+        }
+      });
+
+      google.script.run
+        .withSuccessHandler(() => {
+          loadData();
+          newRecordFormCollapse.hide();
+
+          inputs.forEach(input => {
+              if (input.type === 'checkbox') {
+                  input.checked = false;
+              } else if (input.tagName === 'SELECT') {
+                  input.value = '';
+              } else {
+                  input.value = '';
+              }
+          });
+        })
+        .withFailureHandler(error => {
+            alert('Error adding record: ' + error.message);
+        })
+        .saveRecord(record);
+    }
+
+    function editRow(button) {
+      const row = button.closest('tr');
+      const tds = row.querySelectorAll('td.editable');
+      const actualSheetDataRowIndex = parseInt(row.getAttribute('data-sheet-row-index'));
+      const originalRowData = sheetData[actualSheetDataRowIndex];
+
+      if (button.textContent === 'Edit') {
+        tds.forEach((td, i) => {
+          const originalValue = originalRowData[i];
+          const header = headers[i];
+          const rule = validationRules[i];
+          let inputHtml = '';
+
+          // Special handling for "Shipped" column - use checkbox
+          if (header === 'Shipped') {
+            inputHtml = `<div class='form-check'>
+                          <input type='checkbox' class='form-check-input' ${originalValue ? 'checked' : ''}>
+                        </div>`;
+          }
+          else if (rule && rule.criteria === 'VALUE_IN_LIST') {
+            let optionsHtml = `<option value="">Select</option>`;
+            optionsHtml += rule.args[0].map(opt => `<option value="${opt}" ${opt === originalValue ? 'selected' : ''}>${opt}</option>`).join('');
+            inputHtml = `<select class='form-select'>${optionsHtml}</select>`;
+          } else if (rule && rule.criteria === 'DATE_IS_VALID_DATE') {
+            const d = new Date(originalValue);
+            const iso = !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : '';
+            inputHtml = `<input type='date' class='form-control' value='${iso}'>`;
+          } else if (typeof originalValue === 'boolean') {
+             inputHtml = `<input type='checkbox' class='form-check-input' ${originalValue ? 'checked' : ''}>`;
+          } else {
+            inputHtml = `<input type='text' class='form-control' value='${originalValue}'>`;
+          }
+
+          td.innerHTML = inputHtml;
+        });
+        button.textContent = 'Save';
+        const actionsCell = button.parentNode;
+        let cancelButton = actionsCell.querySelector('.btn-outline-secondary');
+        if (!cancelButton) {
+            cancelButton = document.createElement('button');
+            cancelButton.className = 'btn btn-sm btn-outline-secondary ms-1';
+            cancelButton.textContent = 'Cancel';
+            cancelButton.onclick = function() { cancelEdit(this); };
+            actionsCell.appendChild(cancelButton);
+        }
+      } else {
+        const updated = { id: row.getAttribute('data-id') };
+        tds.forEach(td => {
+          const idx = td.getAttribute('data-index');
+          const header = headers[idx];
+          const input = td.querySelector('input, select');
+
+          if (input) {
+            if (input.type === 'checkbox') {
+                updated[header] = input.checked;
+            } else if (input.tagName === 'SELECT' && input.value === '') {
+                updated[header] = '';
+            } else {
+                updated[header] = input.value;
+            }
+          } else {
+            updated[header] = td.textContent;
+          }
+        });
+        headers.forEach(h => { if (!(h in updated)) updated[h] = ''; });
+
+        google.script.run
+            .withSuccessHandler(() => {
+                loadData();
+                const cancelButton = button.parentNode.querySelector('.btn-outline-secondary');
+                if (cancelButton) cancelButton.remove();
+            })
+            .withFailureHandler(error => {
+                alert('Error updating record: ' + error.message);
+            })
+            .saveRecord(updated);
+        button.textContent = 'Edit';
+      }
+    }
+
+    function cancelEdit(button) {
+        loadData();
+        const actionsCell = button.parentNode;
+        const editButton = actionsCell.querySelector('.btn-outline-primary');
+        if (editButton) editButton.textContent = 'Edit';
+        button.remove();
+    }
+
+    function deleteRecordUI(button) {
+        if (confirm('Are you sure you want to delete this record?')) {
+            const row = button.closest('tr');
+            const id = row.getAttribute('data-id');
+            google.script.run
+                .withSuccessHandler(() => {
+                    loadData();
+                })
+                .withFailureHandler(error => {
+                    alert('Error deleting record: ' + error.message);
+                })
+                .deleteRecord(id);
+        }
+    }
+  </script>
+</body>
+</html>
